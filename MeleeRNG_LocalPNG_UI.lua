@@ -720,6 +720,7 @@ local UI_BG_SCREEN_ATTR = "MeleeRNG_LocalPngBackground"
 local UI_BG_LAYER_NAME = "MeleeRNG_OldGui_BG_Layer"
 local UI_BG_IMAGE_NAME = "MeleeRNG_OldGui_Animated_Frame"
 local UI_BG_BUFFER_NAME = "MeleeRNG_OldGui_Animated_Buffer"
+local UI_BG_ICON_IMAGE_NAME = "MeleeRNG_ToggleIcon_Animated_Frame"
 local UI_BG_DIM_NAME = "MeleeRNG_OldGui_BG_Dim"
 local UI_BG_STATUS_NAME = "MeleeRNG_LocalPng_Status"
 local UI_BG_PANEL_ALPHA_ATTR = "MeleeRNG_OldGuiBgPanelAlphaFixed"
@@ -727,6 +728,7 @@ local UI_BG_PANEL_ALPHA_ATTR = "MeleeRNG_OldGuiBgPanelAlphaFixed"
 local UI_BG_PANEL_TRANSPARENCY = 0.68
 -- Higher = less black over the background. 0.28 is dark enough for readability.
 local UI_BG_DIM_TRANSPARENCY = 0.92
+local UI_BG_WARM_TRANSPARENCY = 0.99
 local UI_BG_LOCAL_FRAME_COUNT = 630
 local UI_BG_LOCAL_FRAME_FPS = 60
 local UI_BG_FRAME_W, UI_BG_FRAME_H = 240, 426
@@ -1020,6 +1022,7 @@ local function uiBgIsOwnObject(obj)
         obj.Name == UI_BG_LAYER_NAME or
         obj.Name == UI_BG_IMAGE_NAME or
         obj.Name == UI_BG_BUFFER_NAME or
+        obj.Name == UI_BG_ICON_IMAGE_NAME or
         obj.Name == UI_BG_DIM_NAME or
         obj.Name == UI_BG_STATUS_NAME
     )
@@ -1092,29 +1095,93 @@ local function uiBgSetSheetFrame(img, sheet, slot)
     img.ImageRectOffset = Vector2.new(col * UI_BG_FRAME_W, row * UI_BG_FRAME_H)
 end
 
-local function uiBgStartSheetAnimation(img, sheets)
-    _uiBgAnimToken = _uiBgAnimToken + 1
-    local token = _uiBgAnimToken
+local function uiBgSheetBufferFor(active, standbyZ)
+    if not active or not active.Parent then return nil end
+    local buffer = active.Parent:FindFirstChild(UI_BG_BUFFER_NAME)
+    if buffer and not buffer:IsA("ImageLabel") then
+        buffer:Destroy()
+        buffer = nil
+    end
+    if buffer == active then
+        buffer = nil
+    end
+    if not buffer then
+        local primary = active.Parent:FindFirstChild(UI_BG_IMAGE_NAME) or active.Parent:FindFirstChild(UI_BG_ICON_IMAGE_NAME)
+        if primary and primary:IsA("ImageLabel") and primary ~= active then
+            buffer = primary
+        end
+    end
+    if not buffer then
+        buffer = Instance.new("ImageLabel")
+        buffer.Name = UI_BG_BUFFER_NAME
+        buffer.BorderSizePixel = 0
+        buffer.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+        buffer.BackgroundTransparency = 1
+        buffer.Parent = active.Parent
+    end
+    buffer.Size = active.Size
+    buffer.Position = active.Position
+    buffer.BackgroundTransparency = 1
+    buffer.ImageTransparency = UI_BG_WARM_TRANSPARENCY
+    buffer.Visible = true
+    buffer.ZIndex = standbyZ or 0
+    uiBgTrySet(buffer, "ScaleType", Enum.ScaleType.Crop)
+    return buffer
+end
+
+local function uiBgWarmSheetBuffer(active, sheet, token, standbyZ)
+    local buffer = uiBgSheetBufferFor(active, standbyZ)
+    if not buffer or not sheet then return nil end
+
+    uiBgSetSheetFrame(buffer, sheet, 0)
+    buffer.Visible = true
+    buffer.ZIndex = standbyZ or 0
+    buffer.ImageTransparency = UI_BG_WARM_TRANSPARENCY
+    uiBgPreloadAssets({ sheet.asset })
+
+    local deadline = os.clock() + 0.6
+    while GEN == _G.MeleeRNG_Gen and token == _uiBgAnimToken and buffer.Parent and os.clock() < deadline do
+        local ok, loaded = pcall(function() return buffer.IsLoaded end)
+        if ok and loaded == true then
+            break
+        end
+        task.wait(0.01)
+    end
+    task.wait()
+    return buffer
+end
+
+local function uiBgNextSheetIndex(current, count)
+    if count <= 1 then return 1 end
+    local nextIndex = current + 1
+    if nextIndex > count then nextIndex = 1 end
+    return nextIndex
+end
+
+local function uiBgStartSheetAnimation(img, sheets, sharedToken, baseZ)
+    if not sharedToken then
+        _uiBgAnimToken = _uiBgAnimToken + 1
+    end
+    local token = sharedToken or _uiBgAnimToken
     if not img or not sheets or #sheets == 0 then return end
 
-    img.Visible = true
-    img.ImageTransparency = 0
-    img.BackgroundTransparency = 1
-    img.ZIndex = 1
+    local activeZ = baseZ or 1
+    local standbyZ = math.max(0, activeZ - 1)
+    local active = img
+    local standby = uiBgSheetBufferFor(active, standbyZ)
 
-    local buffer = img.Parent and img.Parent:FindFirstChild(UI_BG_BUFFER_NAME)
-    if buffer and buffer:IsA("ImageLabel") then
-        buffer.Visible = false
-        buffer.ImageTransparency = 1
-    end
-
-    uiBgSetSheetFrame(img, sheets[1], 0)
+    active.Visible = true
+    active.ImageTransparency = 0
+    active.BackgroundTransparency = 1
+    active.ZIndex = activeZ
+    uiBgSetSheetFrame(active, sheets[1], 0)
 
     local delay = 1 / math.max(1, UI_BG_LOCAL_FRAME_FPS)
     task.spawn(function()
         local sheetIndex = 1
         local slot = 0
-        while GEN == _G.MeleeRNG_Gen and token == _uiBgAnimToken and img and img.Parent do
+        local preparedIndex = nil
+        while GEN == _G.MeleeRNG_Gen and token == _uiBgAnimToken and active and active.Parent do
             local sheet = sheets[sheetIndex]
             if not sheet then
                 sheetIndex = 1
@@ -1122,19 +1189,164 @@ local function uiBgStartSheetAnimation(img, sheets)
                 sheet = sheets[1]
             end
             if sheet then
-                uiBgSetSheetFrame(img, sheet, slot)
+                local frameCount = sheet.frames or UI_BG_SHEET_FRAMES
+                uiBgSetSheetFrame(active, sheet, slot)
+
+                if #sheets > 1 and slot >= math.max(1, frameCount - 10) then
+                    local nextIndex = uiBgNextSheetIndex(sheetIndex, #sheets)
+                    if preparedIndex ~= nextIndex then
+                        standby = uiBgWarmSheetBuffer(active, sheets[nextIndex], token, standbyZ)
+                        preparedIndex = standby and nextIndex or nil
+                    end
+                end
+
                 slot = slot + 1
-                if slot >= (sheet.frames or UI_BG_SHEET_FRAMES) then
-                    slot = 0
-                    sheetIndex = sheetIndex + 1
-                    if sheetIndex > #sheets then
-                        sheetIndex = 1
+                if slot >= frameCount then
+                    local nextIndex = uiBgNextSheetIndex(sheetIndex, #sheets)
+                    if nextIndex ~= sheetIndex and sheets[nextIndex] then
+                        if preparedIndex ~= nextIndex then
+                            standby = uiBgWarmSheetBuffer(active, sheets[nextIndex], token, standbyZ)
+                            preparedIndex = standby and nextIndex or nil
+                        end
+
+                        if standby and standby.Parent and preparedIndex == nextIndex then
+                            standby.Size = active.Size
+                            standby.Position = active.Position
+                            standby.Visible = true
+                            standby.ZIndex = activeZ
+                            standby.ImageTransparency = 0
+
+                            active.ZIndex = standbyZ
+                            active.ImageTransparency = UI_BG_WARM_TRANSPARENCY
+
+                            local oldActive = active
+                            active = standby
+                            standby = oldActive
+                            sheetIndex = nextIndex
+                            slot = 1
+                            preparedIndex = nil
+                        else
+                            slot = math.max(0, frameCount - 1)
+                        end
+                    else
+                        sheetIndex = nextIndex
+                        slot = 0
                     end
                 end
             end
             task.wait(delay)
         end
     end)
+end
+
+local function uiBgFindToggleIcon(root, window)
+    if not root then return nil end
+    local best, bestScore = nil, -1
+    for _, d in ipairs(root:GetDescendants()) do
+        if (d:IsA("ImageButton") or d:IsA("TextButton")) and (not window or not d:IsDescendantOf(window)) then
+            local sx, sy = d.AbsoluteSize.X, d.AbsoluteSize.Y
+            if sx <= 0 then sx = d.Size.X.Offset end
+            if sy <= 0 then sy = d.Size.Y.Offset end
+            if sx >= 24 and sx <= 72 and sy >= 24 and sy <= 72 then
+                local score = 0
+                if d:IsA("ImageButton") then score = score + 20 end
+                if d.Parent == root then score = score + 12 end
+                if math.abs(sx - sy) <= 8 then score = score + 8 end
+                if tostring(d.Name):lower():find("icon", 1, true) then score = score + 10 end
+                if d:IsA("ImageButton") and tostring(d.Image or ""):find("3117561276", 1, true) then
+                    score = score + 50
+                end
+                if score > bestScore then
+                    bestScore = score
+                    best = d
+                end
+            end
+        end
+    end
+    return best
+end
+
+local function uiBgFindWindowDotButton(window)
+    if not window then return nil end
+    local wx, wy = window.AbsolutePosition.X, window.AbsolutePosition.Y
+    local ww = window.AbsoluteSize.X
+    local best, bestScore = nil, -1
+    for _, d in ipairs(window:GetDescendants()) do
+        if d:IsA("ImageButton") or d:IsA("TextButton") then
+            local sx, sy = d.AbsoluteSize.X, d.AbsoluteSize.Y
+            if sx <= 0 then sx = d.Size.X.Offset end
+            if sy <= 0 then sy = d.Size.Y.Offset end
+            if sx >= 18 and sx <= 44 and sy >= 18 and sy <= 44 then
+                local ax, ay = d.AbsolutePosition.X, d.AbsolutePosition.Y
+                local score = 0
+                if ax >= wx + ww - 80 then score = score + 35 end
+                if ay <= wy + 70 then score = score + 35 end
+                if math.abs(sx - sy) <= 8 then score = score + 8 end
+                if d:IsA("TextButton") then
+                    local t = tostring(d.Text or ""):lower()
+                    if t == "x" or #t <= 3 then score = score + 12 end
+                end
+                if score > bestScore then
+                    bestScore = score
+                    best = d
+                end
+            end
+        end
+    end
+    return best
+end
+
+local function uiBgClearButtonBackground(button)
+    if not button then return end
+    for _, name in ipairs({ UI_BG_ICON_IMAGE_NAME, UI_BG_BUFFER_NAME }) do
+        local child = button:FindFirstChild(name)
+        if child then child:Destroy() end
+    end
+end
+
+local function uiBgClearToggleIconBackground(root, window)
+    uiBgClearButtonBackground(uiBgFindToggleIcon(root, window))
+    uiBgClearButtonBackground(uiBgFindWindowDotButton(window))
+end
+
+local function uiBgApplyButtonBackground(icon, sheets, token)
+    if not icon or not sheets or #sheets == 0 then return end
+
+    icon.ClipsDescendants = true
+    icon.BackgroundTransparency = math.max(icon.BackgroundTransparency, 0.16)
+
+    local bg = icon:FindFirstChild(UI_BG_ICON_IMAGE_NAME)
+    if bg and not bg:IsA("ImageLabel") then
+        bg:Destroy()
+        bg = nil
+    end
+    if not bg then
+        bg = Instance.new("ImageLabel")
+        bg.Name = UI_BG_ICON_IMAGE_NAME
+        bg.BorderSizePixel = 0
+        bg.BackgroundTransparency = 1
+        bg.Parent = icon
+    end
+    bg.Size = UDim2.new(1, 0, 1, 0)
+    bg.Position = UDim2.new(0, 0, 0, 0)
+    bg.BackgroundTransparency = 1
+    bg.ImageTransparency = 0
+    bg.Visible = true
+    bg.ZIndex = icon.ZIndex + 1
+    uiBgTrySet(bg, "ScaleType", Enum.ScaleType.Crop)
+
+    for _, child in ipairs(icon:GetChildren()) do
+        if child:IsA("GuiObject") and child ~= bg and child.Name ~= UI_BG_BUFFER_NAME then
+            child.ZIndex = math.max(child.ZIndex, icon.ZIndex + 3)
+        end
+    end
+
+    uiBgStartSheetAnimation(bg, sheets, token, icon.ZIndex + 1)
+end
+
+local function uiBgApplyToggleIconBackground(root, window, sheets, token)
+    uiBgApplyButtonBackground(uiBgFindToggleIcon(root, window), sheets, token)
+    uiBgApplyButtonBackground(uiBgFindWindowDotButton(window), sheets, token)
 end
 
 local function uiBgSetInlineStatus(root, text, visible)
@@ -1174,6 +1386,7 @@ local function meleeApplyLocalPngBackground(enabled)
     if enabled == false then
         _uiBgAnimToken = _uiBgAnimToken + 1
         if layer then layer:Destroy() end
+        uiBgClearToggleIconBackground(root, window)
         uiBgSetInlineStatus(root, "", false)
         UI_BG_LAST_STATUS = "background off"
         return true
@@ -1253,10 +1466,14 @@ local function meleeApplyLocalPngBackground(enabled)
 
     local sheets = uiBgEnsureSpriteSheets()
     if sheets and #sheets > 0 then
-        uiBgStartSheetAnimation(img, sheets)
+        _uiBgAnimToken = _uiBgAnimToken + 1
+        local animToken = _uiBgAnimToken
+        uiBgStartSheetAnimation(img, sheets, animToken, 1)
+        uiBgApplyToggleIconBackground(root, window, sheets, animToken)
         UI_BG_LAST_STATUS = string.format("using visible PNG sprite sheets (%d/%d loaded at %d FPS, looping)", #sheets, UI_BG_SHEET_COUNT, UI_BG_LOCAL_FRAME_FPS)
         uiBgSetInlineStatus(root, "", false)
     else
+        uiBgClearToggleIconBackground(root, window)
         local assets = uiBgEnsureLocalPngFrames()
         if assets and #assets > 0 then
             uiBgShowStaticLocalFrame(img, assets)
