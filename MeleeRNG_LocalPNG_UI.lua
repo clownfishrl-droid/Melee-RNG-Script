@@ -767,6 +767,8 @@ local function uiBgFileExists(path)
     return ok and exists == true
 end
 
+local uiBgPathVariants
+
 local function uiBgGetCustomAsset(path)
     local fn = nil
     if type(getcustomasset) == "function" then
@@ -779,6 +781,18 @@ local function uiBgGetCustomAsset(path)
         return nil
     end
 
+    for _, p in ipairs(uiBgPathVariants(path)) do
+        local ok, asset = pcall(fn, p)
+        if ok and type(asset) == "string" and asset ~= "" then
+            return asset
+        end
+    end
+
+    UI_BG_LAST_STATUS = "asset API rejected path variants for " .. tostring(path)
+    return nil
+end
+
+uiBgPathVariants = function(path)
     local tries, seen = {}, {}
     local function add(p)
         if type(p) == "string" and p ~= "" and not seen[p] then
@@ -795,15 +809,7 @@ local function uiBgGetCustomAsset(path)
     add((path:gsub("^%./", "")):gsub("\\", "/"))
     add((path:gsub("^%./", "")):gsub("/", "\\"))
 
-    for _, p in ipairs(tries) do
-        local ok, asset = pcall(fn, p)
-        if ok and type(asset) == "string" and asset ~= "" then
-            return asset
-        end
-    end
-
-    UI_BG_LAST_STATUS = "asset API rejected path variants for " .. tostring(path)
-    return nil
+    return tries
 end
 
 local function uiBgPreloadAssets(assetList)
@@ -825,18 +831,28 @@ local function uiBgSheetPath(folder, i)
 end
 
 local function uiBgExistingPath(path)
-    if uiBgFileExists(path) then return path end
-
-    local stripped = path:gsub("^%./", ""):gsub("^%.\\", "")
-    if stripped ~= path and uiBgFileExists(stripped) then return stripped end
-
-    local slash = path:gsub("\\", "/")
-    if slash ~= path and uiBgFileExists(slash) then return slash end
-
-    local backslash = path:gsub("/", "\\")
-    if backslash ~= path and uiBgFileExists(backslash) then return backslash end
+    for _, p in ipairs(uiBgPathVariants(path)) do
+        if uiBgFileExists(p) then return p end
+    end
 
     return nil
+end
+
+local function uiBgResolveCustomAsset(path)
+    local existing = uiBgExistingPath(path)
+    if existing then
+        local asset = uiBgGetCustomAsset(existing)
+        if asset then return existing, asset end
+    end
+
+    -- Some executors can resolve getcustomasset() paths even when isfile() is
+    -- unavailable or scoped differently, so do not let isfile() be the gate.
+    for _, p in ipairs(uiBgPathVariants(path)) do
+        local asset = uiBgGetCustomAsset(p)
+        if asset then return p, asset end
+    end
+
+    return nil, nil
 end
 
 local function uiBgExistingFramePath(folder, i)
@@ -859,9 +875,8 @@ local function uiBgEnsureSpriteSheets()
 
     local lastProblem = "local PNG sprite sheets missing"
     for _, folder in ipairs(UI_BG_SHEET_FOLDERS) do
-        local firstPath = uiBgExistingSheetPath(folder, 1)
+        local firstPath, firstAsset = uiBgResolveCustomAsset(uiBgSheetPath(folder, 1))
         if firstPath then
-            local firstAsset = uiBgGetCustomAsset(firstPath)
             if firstAsset then
                 uiBgPreloadAssets({ firstAsset })
                 local sheets = { { asset = firstAsset, frames = uiBgSheetFrameCount(1) } }
@@ -873,15 +888,9 @@ local function uiBgEnsureSpriteSheets()
                     local batchAssets = {}
                     for i = 2, UI_BG_SHEET_COUNT do
                         if _uiBgCachedSheets ~= sheets then return end
-                        local path = uiBgExistingSheetPath(folder, i)
-                        if not path then
-                            UI_BG_LAST_STATUS = string.format("sprite sheet folder %s stopped at sheet %04d", folder, i)
-                            vprint("[MeleeRNG PNG BG] " .. UI_BG_LAST_STATUS)
-                            return
-                        end
-                        local asset = uiBgGetCustomAsset(path)
+                        local path, asset = uiBgResolveCustomAsset(uiBgSheetPath(folder, i))
                         if not asset then
-                            UI_BG_LAST_STATUS = "getcustomasset/getsynasset could not load " .. path
+                            UI_BG_LAST_STATUS = string.format("sprite sheet folder %s stopped at sheet %04d", folder, i)
                             vprint("[MeleeRNG PNG BG] " .. UI_BG_LAST_STATUS)
                             return
                         end
@@ -920,9 +929,8 @@ local function uiBgEnsureLocalPngFrames()
 
     local lastProblem = "local PNG frames missing"
     for _, folder in ipairs(UI_BG_LOCAL_FRAME_FOLDERS) do
-        local firstPath = uiBgExistingFramePath(folder, 1)
+        local firstPath, firstAsset = uiBgResolveCustomAsset(uiBgLocalFramePath(folder, 1))
         if firstPath then
-            local firstAsset = uiBgGetCustomAsset(firstPath)
             if firstAsset then
                 uiBgPreloadAssets({ firstAsset })
                 local assets = { firstAsset }
@@ -933,15 +941,9 @@ local function uiBgEnsureLocalPngFrames()
                     local batch = {}
                     for i = 2, UI_BG_LOCAL_FRAME_COUNT do
                         if _uiBgCachedLocalAssets ~= assets then return end
-                        local path = uiBgExistingFramePath(folder, i)
-                        if not path then
-                            UI_BG_LAST_STATUS = string.format("PNG folder %s stopped at frame %04d", folder, i)
-                            vprint("[MeleeRNG PNG BG] " .. UI_BG_LAST_STATUS)
-                            return
-                        end
-                        local asset = uiBgGetCustomAsset(path)
+                        local path, asset = uiBgResolveCustomAsset(uiBgLocalFramePath(folder, i))
                         if not asset then
-                            UI_BG_LAST_STATUS = "getcustomasset/getsynasset could not load " .. path
+                            UI_BG_LAST_STATUS = string.format("PNG folder %s stopped at frame %04d", folder, i)
                             vprint("[MeleeRNG PNG BG] " .. UI_BG_LAST_STATUS)
                             return
                         end
