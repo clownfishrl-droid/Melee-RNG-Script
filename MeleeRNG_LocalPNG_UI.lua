@@ -345,7 +345,7 @@ local states = {
     showAutoRaid   = false,
     showHideMobs   = false,
     mouseUnlockN   = false, -- N hotkey: keep Roblox mouse free/unlocked in first person
-    uiPngBackground = true, -- old GUI only: local PNG background behind NexusLib window
+    uiPngBackground = false, -- old GUI only: local PNG background behind NexusLib window (heavy; opt-in)
     -- MainGUI.GeneralUI (client visibility only; see applyMeleeGameUiHiding)
     uiHideManaKills = false, -- ManaFrame + KillsFrame + StageProgress (combat bar)
     uiHideMiniRoll  = false, -- MiniRollFrame (mini-roll animations UI)
@@ -447,6 +447,7 @@ local function saveSettings()
     pcall(function()
         local t = {}
         for k, v in pairs(states) do t[k] = v end
+        t.uiPngBackgroundLagSafeMigrated = true
         t.walkSpeedVal = walkSpeedVal
         local up = {}
         for _, name in ipairs(UPGRADE_ORDER) do
@@ -492,6 +493,9 @@ pcall(function()
     end
 end)
 for k in pairs(states) do if LS[k] ~= nil then states[k] = LS[k] end end
+if LS.uiPngBackgroundLagSafeMigrated ~= true then
+    states.uiPngBackground = false
+end
 if LS.walkSpeedVal then walkSpeedVal = LS.walkSpeedVal end
 if LS.autoSave     then states.autoSave     = LS.autoSave     end
 if LS.showAutoRaid then states.showAutoRaid = LS.showAutoRaid end
@@ -601,7 +605,7 @@ states.uiHideHud       = states.uiHideHud == true
 states.uiHideNotifications = states.uiHideNotifications == true
 states.guildSpReserve = math.clamp(math.floor(tonumber(states.guildSpReserve) or 0), 0, 100000000)
 states.mouseUnlockN = states.mouseUnlockN == true
-states.uiPngBackground = states.uiPngBackground ~= false
+states.uiPngBackground = states.uiPngBackground == true
 -- Totem CD/cap from LS applied in totem block (after TOTEM_CYCLE_SEC) + sanitize vs os.time()
 
 -- ── Mouse unlock hotkey (N) ───────────────────────────────────
@@ -730,7 +734,7 @@ local UI_BG_PANEL_TRANSPARENCY = 0.68
 local UI_BG_DIM_TRANSPARENCY = 0.92
 local UI_BG_WARM_TRANSPARENCY = 0.99
 local UI_BG_LOCAL_FRAME_COUNT = 630
-local UI_BG_LOCAL_FRAME_FPS = 60
+local UI_BG_LOCAL_FRAME_FPS = 24
 local UI_BG_FRAME_W, UI_BG_FRAME_H = 240, 426
 local UI_BG_SHEET_COLS, UI_BG_SHEET_ROWS = 12, 9
 local UI_BG_SHEET_FRAMES = UI_BG_SHEET_COLS * UI_BG_SHEET_ROWS
